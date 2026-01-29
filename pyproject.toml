@@ -1,0 +1,20 @@
+[project]
+name = "pdf-quality-enhancer"
+version = "0.1.0"
+description = "PDF 扫描件批量增强工具"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "PyQt5>=5.15",
+  "PyMuPDF>=1.23",
+  "Pillow>=10.0",
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+]
+
+[tool.setuptools]
+py-modules = ["core", "cli", "gui"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -3,70 +3,28 @@
 # ===================================================================
 import sys
 import os
-import io
 import traceback
 import glob
 
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QMessageBox, QListWidget, QProgressBar, QSlider)
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QMessageBox,
+    QListWidget,
+    QProgressBar,
+    QSlider,
+)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
-import fitz
-from PIL import Image, ImageOps, ImageFilter, ImageEnhance
-import numpy as np
-import cv2
+from core import EnhanceParams, process_pdf
 
 # ===================================================================
-# 2. 您的核心图像处理函数 (【重大修改】)
-# ===================================================================
-# 【修改】函数签名，增加三个锐化参数
-def deal_image2(image, contrast, sharpen_radius, sharpen_percent, sharpen_threshold):
-    imnp = np.array(image)
-
-    if len(imnp.shape) > 2 and imnp.shape[2] == 3:
-        gray = cv2.cvtColor(imnp, cv2.COLOR_RGB2GRAY)
-    else:
-        gray = imnp
-    tmp = gray / 8
-    kernel = np.array((
-        [1, 1, 1],
-        [1, 0, 1],
-        [1, 1, 1]
-    ))
-    mask = cv2.filter2D(tmp,-1, kernel)
-    mask = mask.astype(np.uint8)
- 
-    mask[mask <240] = 0
-    mask[mask != 0] = 255
-    mask[mask == 0] = 25
-    mask[mask == 255] = 0
-    mask[mask == 25] = 255
-
-    stretched_image = ImageOps.autocontrast(image,cutoff=1)
-    enh_con = ImageEnhance.Contrast(stretched_image)
-    img_contrasted = enh_con.enhance(contrast)
-
-    ced = np.array(img_contrasted, dtype=np.uint8)
-
-    if len(imnp.shape) > 2 and imnp.shape[2] == 3:
-        result = (~mask)[..., np.newaxis] + (ced & mask[..., np.newaxis])
-    else:
-        result =  ~mask + (ced & mask)
-    image = Image.fromarray(result)
-
-    #image.save("3.png")
-    
-    # 【修改】图像锐化，使用传入的参数而不是固定值
-    img_sharpened = image.filter(ImageFilter.UnsharpMask(
-        radius=sharpen_radius, 
-        percent=sharpen_percent,
-        threshold=sharpen_threshold
-    ))
-   
-    return img_sharpened
-
-# ===================================================================
-# 3. 后台处理线程 (【修改】)
+# 2. 后台处理线程 (【修改】)
 # ===================================================================
 class Worker(QObject):
     total_progress = pyqtSignal(int, int)
@@ -78,11 +36,12 @@ class Worker(QObject):
     def __init__(self, file_list, contrast_value, radius, percent, threshold):
         super().__init__()
         self.file_list = file_list
-        self.contrast = contrast_value
-        # 【新增】保存锐化参数
-        self.radius = radius
-        self.percent = percent
-        self.threshold = threshold
+        self.params = EnhanceParams(
+            contrast=contrast_value,
+            radius=radius,
+            percent=percent,
+            threshold=threshold,
+        )
 
     def process_files(self):
         total_files = len(self.file_list)
@@ -91,54 +50,15 @@ class Worker(QObject):
         try:
             for i, file_path in enumerate(self.file_list):
                 self.total_progress.emit(i + 1, total_files)
-                output_path = file_path.replace('.pdf', '_enhanced.pdf')
-                
-                if file_path == output_path:
-                    self.current_file_progress.emit(f"跳过已处理文件: {os.path.basename(file_path)}")
-                    continue
-                
-                self.current_file_progress.emit(f"开始处理: {os.path.basename(file_path)}")
-                
-                with fitz.open(file_path) as doc:
-                    page_count = doc.page_count
-                    if page_count < 1:
-                        continue
 
-                    for page_num, page in enumerate(doc):
-                        self.current_file_progress.emit(f"处理 {os.path.basename(file_path)} - 第 {page_num + 1}/{page_count} 页")
-                        
-                        image_list = page.get_images(full=True)
-                        if not image_list:
-                            continue
-                        
-                        for img_info in image_list:
-                            xref = img_info[0]
-                            base_image = doc.extract_image(xref)
-                            if not base_image:
-                                continue
-                            
-                            image_bytes = base_image["image"]
-                            image = Image.open(io.BytesIO(image_bytes))
-                            
-                            # 【修改】调用deal_image2时，传入所有参数
-                            processed_image = deal_image2(
-                                image, 
-                                self.contrast,
-                                self.radius,
-                                self.percent,
-                                self.threshold
-                            )
+                output_path = process_pdf(
+                    file_path,
+                    self.params,
+                    on_status=self.current_file_progress.emit,
+                )
 
-                            buffer = io.BytesIO()
-                            dpi = (base_image.get('xres', 96), base_image.get('yres', 96))
-                            processed_image.save(buffer, format="PNG", dpi=dpi)
-                            
-                            page.replace_image(xref, stream=buffer.getvalue())
-
-                        page.clean_contents()
-                    
-                    doc.save(output_path, garbage=4, deflate=True, clean=True)
-                processed_files += 1
+                if output_path:
+                    processed_files += 1
 
             self.finished.emit(f'批量处理完成！\n成功处理了 {processed_files}/{total_files} 个文件。')
 
@@ -147,7 +67,7 @@ class Worker(QObject):
             self.error.emit(detailed_error)
 
 # ===================================================================
-# 4. 主窗口 GUI 类 (【重大修改】)
+# 3. 主窗口 GUI 类 (【重大修改】)
 # ===================================================================
 class PDFProcessorApp(QMainWindow):
     def __init__(self):
